@@ -101,16 +101,17 @@ def _short_month(full_name):
 # ══════════════════════════════════════════════════════════════════════════════
 #  CLASIFICACIÓN
 # ══════════════════════════════════════════════════════════════════════════════
-def classify(nro, desc):
-    d = desc or ""
-    if "U$D" in d or "U$d" in d:
+def classify(nro, desc, moneda=""):
+    d = str(desc or "")
+    m = str(moneda or "").strip().upper()
+    if "U$" in m or "USD" in m or "U$D" in d or "U$d" in d:
         return "USD"
     if str(nro) in ("1,01", "2,01") and "CONFORME" not in d.upper():
         return "DOC"
     return "CE"
 
-def is_affected(nro, desc, motive):
-    k = classify(nro, desc)
+def is_affected(nro, desc, motive, moneda=""):
+    k = classify(nro, desc, moneda)
     if k == "DOC":  return False
     if k == "USD":  return motive in MOTIVOS_USD
     return True
@@ -151,6 +152,48 @@ def read_orange(src):
                 result.setdefault(rid, {})[cell.column] = cell.value
     return result
 
+def read_computo(src):
+    """Lee el cómputo métrico → {nro: pct_acumulado (0-1)}"""
+    if isinstance(src, bytes):
+        src = io.BytesIO(src)
+    wb = load_workbook(src, data_only=True)
+    ws = wb.active
+    result = {}
+    for row in ws.iter_rows(min_row=3, values_only=True):
+        if not row[0]: continue
+        nro = str(row[0]).strip()
+        pct = float(row[9] or 0)   # col 10 = Cantidad medición acumulada (fracción 0-1)
+        result[nro] = pct
+    return result
+
+def build_computo_floors(items, computo):
+    """
+    Para cada ítem, identifica los meses protegidos por el cómputo métrico.
+    Devuelve {item_id: {month_idx_0based: actual_val}}
+    Lógica: recorre los meses en orden acumulando hasta alcanzar el % certificado.
+    Todos los meses dentro de ese acumulado quedan protegidos con su valor actual.
+    """
+    floors = {}
+    for item in items:
+        iid = item[0]
+        nro = str(item[2] or '').strip()
+        if not computo or nro not in computo:
+            floors[iid] = {}
+            continue
+        pct_cert = computo[nro]
+        actuals = [float(v or 0) for v in item[MONTH_IDX:]]
+        cumsum = 0.0
+        item_floors = {}
+        for mi, val in enumerate(actuals):
+            if cumsum + val <= pct_cert + 1e-9:
+                cumsum += val
+                if val > 0:
+                    item_floors[mi] = val
+            else:
+                break
+        floors[iid] = item_floors
+    return floors
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  ALGORITMO DE CORRIMIENTO
 # ══════════════════════════════════════════════════════════════════════════════
@@ -174,7 +217,7 @@ def shift_one(pcts, idx, fraction, item_max, certified_val=0.0):
         t += 1
     return pcts, 0.0
 
-def apply_delays(items, header, delays, naranja, extra_months=0):
+def apply_delays(items, header, delays, naranja, extra_months=0, computo_floors=None):
     month_names = list(header[MONTH_IDX:])
     for _ in range(extra_months):
         month_names.append(next_month_hdr(month_names[-1]))
@@ -183,22 +226,26 @@ def apply_delays(items, header, delays, naranja, extra_months=0):
     result        = []
     overflow_nros = []
     for item in items:
-        iid  = item[0]; nro = item[2]; desc = item[3]
+        iid    = item[0]; nro = item[2]; desc = item[3]
+        moneda = item[5] if len(item) > 5 else ""
         base = [float(v or 0) for v in item[MONTH_IDX:]]
         orig = list(base)
         pcts = base + [0.0] * extra_months
-        item_max    = max((v for v in orig if v and v > 0), default=1.0)
-        item_orange = naranja.get(iid, {})
-        total_ovf   = 0.0
+        item_max        = max((v for v in orig if v and v > 0), default=1.0)
+        item_orange     = naranja.get(iid, {})
+        item_comp_floor = (computo_floors or {}).get(iid, {})
+        total_ovf       = 0.0
         for d in delays:
-            if not is_affected(nro, desc, d["motive"]): continue
+            if not is_affected(nro, desc, d["motive"], moneda): continue
             mn = d["month_name"]
             if mn not in m_to_idx: continue
             mi   = m_to_idx[mn]
             days = min(int(d["days"]), days_in(mn))
             frac = days / days_in(mn)
             col1 = MONTH_IDX + 1 + mi
-            cert = float(item_orange.get(col1, 0))
+            cert_naranja = float(item_orange.get(col1, 0))
+            cert_computo = item_comp_floor.get(mi, 0)
+            cert = max(cert_naranja, cert_computo)
             pcts, ovf = shift_one(pcts, mi, frac, item_max, cert)
             total_ovf += ovf
         if total_ovf > 1e-10:
@@ -265,7 +312,7 @@ def _write_item_row(ws, row, nro, desc, mon, prec, lbl, lbl_fill,
             if ci == 4 and val: c.number_format = "#,##0.00"
         else:
             midx = ci - 6; c.alignment = AC; c.font = F()
-            if val is not None: c.number_format = "0%"
+            if val is not None: c.number_format = "0.00%"
             tag = (diff or {}).get(midx)
             c.fill = FILLS[tag] if tag else base_fill
             if tag: c.font = F(True, 8)
@@ -295,7 +342,7 @@ def _write_delta_row(ws, row, nro, vals_a, vals_b, n_meses):
 
 
 def generate_excel(src_actual, src_contrat, epec_items, epec_header,
-                   naranja, obra_name=""):
+                   naranja, obra_name="", computo=None):
     """Genera el Excel y devuelve bytes."""
     hdr_a, items_a = read_file(src_actual)
     items_c = None
@@ -459,14 +506,29 @@ def generate_excel(src_actual, src_contrat, epec_items, epec_header,
 
     # ── HOJA 3: VERIFICACIÓN CERTIFICADOS ────────────────────────────────────
     ws3 = wb.create_sheet("Verificación Certificados")
-    for col_l, w in zip("ABCDEFG", [8,52,22,18,18,18,16]):
+    for col_l, w in zip("ABCDEFGH", [8,52,22,18,18,18,16,14]):
         ws3.column_dimensions[col_l].width = w
     violations = []; ok_list = []
+
+    # Construir pisos del cómputo para verificación
+    comp_floors_verify = build_computo_floors(items_a, computo) if computo else {}
+
     for item_a in items_a:
         iid = item_a[0]; nro = item_a[2]; desc = item_a[3]
         orange_cols = naranja.get(iid, {})
-        if not orange_cols: continue
-        for col1, val_a in orange_cols.items():
+        comp_f      = comp_floors_verify.get(iid, {})
+
+        # Unificar: naranjas + meses del cómputo no cubiertos por naranjas
+        certified_cols = {}  # {col1_1based: (val, fuente)}
+        for col1, val in orange_cols.items():
+            certified_cols[col1] = (val, "SIGO (naranja)")
+        for mi, val in comp_f.items():
+            col1 = MONTH_IDX + 1 + mi
+            if col1 not in certified_cols:
+                certified_cols[col1] = (val, "Cómputo")
+
+        if not certified_cols: continue
+        for col1, (val_a, fuente) in certified_cols.items():
             mes_name = hdr_a[col1-1] if col1-1 < len(hdr_a) else ""
             rc2 = prop_c.get(iid); re2 = prop_e.get(iid)
             vc  = rc2[col1-1] if rc2 and col1-1 < len(rc2) else None
@@ -474,7 +536,7 @@ def generate_excel(src_actual, src_contrat, epec_items, epec_header,
             fa  = round(float(val_a or 0), 8)
             fc2 = round(float(vc or 0), 8) if vc is not None else fa
             fe2 = round(float(ve or 0), 8) if ve is not None else fa
-            entry = dict(nro=nro, desc=desc, mes=mes_name, va=val_a, vc=vc, ve=ve)
+            entry = dict(nro=nro, desc=desc, mes=mes_name, va=val_a, vc=vc, ve=ve, fuente=fuente)
             if fa != fc2 or fa != fe2: violations.append(entry)
             else: ok_list.append(entry)
     ws3.merge_cells("A1:G1"); b1 = ws3["A1"]
@@ -486,7 +548,7 @@ def generate_excel(src_actual, src_contrat, epec_items, epec_header,
         b1.fill  = FILLS["ok_b"]
     b1.font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
     b1.alignment = AC; ws3.row_dimensions[1].height = 24
-    for ci, h in enumerate(["Nro","Descripción","Mes","Actual","Contratista","EPEC","Estado"], 1):
+    for ci, h in enumerate(["Nro","Descripción","Mes","Actual","Contratista","EPEC","Estado","Fuente"], 1):
         c = ws3.cell(2, ci, h); c.fill = FILLS["hdr"]
         c.font = F(True,9,"FFFFFF"); c.alignment = AC; c.border = B
     ws3.row_dimensions[2].height = 18
@@ -496,13 +558,17 @@ def generate_excel(src_actual, src_contrat, epec_items, epec_header,
         flt  = FILLS["viol_row"] if is_v else FILLS["ok_row"]
         est  = "MODIFICADO" if is_v else "OK"
         fc_e = Font(name="Calibri", bold=True, size=8, color=("C00000" if is_v else "375623"))
-        for ci, v in enumerate([e["nro"],e["desc"],e["mes"],e["va"],e["vc"],e["ve"],est], 1):
+        fuente = e.get("fuente", "SIGO (naranja)")
+        for ci, v in enumerate([e["nro"],e["desc"],e["mes"],e["va"],e["vc"],e["ve"],est,fuente], 1):
             c = ws3.cell(rv, ci, v); c.fill = flt; c.border = B
             c.alignment = AL if ci == 2 else AC
             if ci == 7: c.font = fc_e
+            elif ci == 8:
+                c.font = F(False,8)
+                c.fill = FILLS["dbg"] if not is_v else flt
             elif ci in (4,5,6):
                 c.font = F(True,8)
-                if v is not None: c.number_format = "0%"
+                if v is not None: c.number_format = "0.00%"
             else: c.font = F()
         ws3.row_dimensions[rv].height = row_height(e["desc"]); rv += 1
     ws3.freeze_panes = ws3["A3"]
@@ -544,15 +610,15 @@ def generate_excel(src_actual, src_contrat, epec_items, epec_header,
         c = wc.cell(r,1,mes); c.fill=flt; c.border=B; c.font=F(); c.alignment=AC
         va = cumul_a[i]
         c = wc.cell(r,2,va); c.fill=flt; c.border=B; c.font=F(); c.alignment=AC; c.number_format='#,##0'
-        c = wc.cell(r,3,va/total_a if total_a else 0); c.fill=flt; c.border=B; c.font=F(); c.alignment=AC; c.number_format='0%'
+        c = wc.cell(r,3,va/total_a if total_a else 0); c.fill=flt; c.border=B; c.font=F(); c.alignment=AC; c.number_format='0.00%'
         if cumul_e:
             ve=cumul_e[i]; te=cumul_e[-1] if cumul_e[-1] else 1.0
             c=wc.cell(r,4,ve); c.fill=flt; c.border=B; c.font=F(); c.alignment=AC; c.number_format='#,##0'
-            c=wc.cell(r,5,ve/te); c.fill=flt; c.border=B; c.font=F(); c.alignment=AC; c.number_format='0%'
+            c=wc.cell(r,5,ve/te); c.fill=flt; c.border=B; c.font=F(); c.alignment=AC; c.number_format='0.00%'
         if cumul_c:
             vc=cumul_c[i]; tc2=cumul_c[-1] if cumul_c[-1] else 1.0
             c=wc.cell(r,6,vc); c.fill=flt; c.border=B; c.font=F(); c.alignment=AC; c.number_format='#,##0'
-            c=wc.cell(r,7,vc/tc2); c.fill=flt; c.border=B; c.font=F(); c.alignment=AC; c.number_format='0%'
+            c=wc.cell(r,7,vc/tc2); c.fill=flt; c.border=B; c.font=F(); c.alignment=AC; c.number_format='0.00%'
         wc.row_dimensions[r].height = 15
 
     chart = LineChart()
@@ -622,6 +688,11 @@ with col2:
     uploaded_contrat = st.file_uploader(
         "📗 Propuesta Contratista (opcional)", type=["xlsx","xlsm"],
         help="Mismo formato que la Curva Actual.")
+
+uploaded_computo = st.file_uploader(
+    "📊 Cómputo Métrico (opcional) — protege lo ya certificado en todos los modos",
+    type=["xlsx"],
+    help="Exportado desde SIGO (Ver cómputo). Usar el del último mes disponible.")
 
 months_full = []; months_display = []
 if uploaded_actual:
@@ -702,22 +773,28 @@ if uploaded_actual and not uploaded_contrat and not use_epec:
 if st.button("▶  GENERAR", disabled=not can_generate, type="primary", use_container_width=True):
     with st.spinner("Procesando..."):
         try:
-            actual_bytes  = uploaded_actual.getvalue()
-            contrat_bytes = uploaded_contrat.getvalue() if uploaded_contrat else None
+            actual_bytes   = uploaded_actual.getvalue()
+            contrat_bytes  = uploaded_contrat.getvalue() if uploaded_contrat else None
+            computo_bytes  = uploaded_computo.getvalue() if uploaded_computo else None
 
             hdr_a, items_a = read_file(io.BytesIO(actual_bytes))
             naranja        = read_orange(io.BytesIO(actual_bytes))
+            computo        = read_computo(io.BytesIO(computo_bytes)) if computo_bytes else None
+            comp_floors    = build_computo_floors(items_a, computo) if computo else None
 
             ep_items = None; ep_header = None; overflow_warning = False
 
             if use_epec and delays:
-                ep_items, ep_hdr, ovf = apply_delays(items_a, hdr_a, delays, naranja, extra_months=0)
+                ep_items, ep_hdr, ovf = apply_delays(
+                    items_a, hdr_a, delays, naranja, extra_months=0,
+                    computo_floors=comp_floors)
                 if ovf:
                     overflow_warning = True
                     if overflow_mode == "Extender el plazo":
                         for extra in [2, 4, 6]:
                             ep_items, ep_hdr, ovf = apply_delays(
-                                items_a, hdr_a, delays, naranja, extra_months=extra)
+                                items_a, hdr_a, delays, naranja, extra_months=extra,
+                                computo_floors=comp_floors)
                             if not ovf: break
                     else:
                         ep_items = compress_items(ep_items, ovf)
@@ -730,6 +807,7 @@ if st.button("▶  GENERAR", disabled=not can_generate, type="primary", use_cont
                 epec_header  = ep_header,
                 naranja      = naranja,
                 obra_name    = obra_name.strip(),
+                computo      = computo,
             )
 
             safe  = "".join(c if c.isalnum() or c in "_-" else "_"
