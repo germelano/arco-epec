@@ -763,11 +763,14 @@ st.divider()
 # ── BOTÓN GENERAR ─────────────────────────────────────────────────────────────
 can_generate = (
     uploaded_actual is not None and
+    uploaded_computo is not None and
     (uploaded_contrat is not None or use_epec) and
     (not use_epec or len(delays) > 0)
 )
 
-if uploaded_actual and not uploaded_contrat and not use_epec:
+if uploaded_actual and not uploaded_computo:
+    st.info("Cargá el Cómputo Métrico para continuar.")
+elif uploaded_actual and not uploaded_contrat and not use_epec:
     st.info("Cargá la Propuesta del Contratista o activá la Propuesta EPEC para continuar.")
 
 if st.button("▶  GENERAR", disabled=not can_generate, type="primary", use_container_width=True):
