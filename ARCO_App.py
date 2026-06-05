@@ -167,12 +167,6 @@ def read_computo(src):
     return result
 
 def build_computo_floors(items, computo):
-    """
-    Para cada ítem, identifica los meses protegidos por el cómputo métrico.
-    Devuelve {item_id: {month_idx_0based: actual_val}}
-    Lógica: recorre los meses en orden acumulando hasta alcanzar el % certificado.
-    Todos los meses dentro de ese acumulado quedan protegidos con su valor actual.
-    """
     floors = {}
     for item in items:
         iid = item[0]
@@ -334,7 +328,7 @@ def _write_delta_row(ws, row, nro, vals_a, vals_b, n_meses):
             d   = round(vb - va, 6)
             c.alignment = AC; c.font = F(True, 8)
             if abs(d) >= DIFF_THRESHOLD:
-                c.value = d; c.number_format = '+0%;-0%;""'
+                c.value = d; c.number_format = '+0.00%;-0.00%;""'
                 c.fill  = FILLS["dpos"] if d > 0 else FILLS["dneg"]
             else:
                 c.fill = FILLS["dbg"]
@@ -510,7 +504,6 @@ def generate_excel(src_actual, src_contrat, epec_items, epec_header,
         ws3.column_dimensions[col_l].width = w
     violations = []; ok_list = []
 
-    # Construir pisos del cómputo para verificación
     comp_floors_verify = build_computo_floors(items_a, computo) if computo else {}
 
     for item_a in items_a:
@@ -518,8 +511,7 @@ def generate_excel(src_actual, src_contrat, epec_items, epec_header,
         orange_cols = naranja.get(iid, {})
         comp_f      = comp_floors_verify.get(iid, {})
 
-        # Unificar: naranjas + meses del cómputo no cubiertos por naranjas
-        certified_cols = {}  # {col1_1based: (val, fuente)}
+        certified_cols = {}
         for col1, val in orange_cols.items():
             certified_cols[col1] = (val, "SIGO (naranja)")
         for mi, val in comp_f.items():
