@@ -690,7 +690,7 @@ with col2:
         help="Mismo formato que la Curva Actual.")
 
 uploaded_computo = st.file_uploader(
-    "📊 Cómputo Métrico (opcional) — protege lo ya certificado en todos los modos",
+    "📊 Cómputo Métrico — protege lo ya certificado en todos los modos",
     type=["xlsx"],
     help="Exportado desde SIGO (Ver cómputo). Usar el del último mes disponible.")
 
