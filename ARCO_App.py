@@ -118,13 +118,20 @@ def is_affected(nro, desc, motive):
 # ══════════════════════════════════════════════════════════════════════════════
 #  LECTURA (acepta ruta string o BytesIO)
 # ══════════════════════════════════════════════════════════════════════════════
+def _detect_header_row(ws):
+    """Devuelve la fila del encabezado (1 o 2) detectando si hay fila de descripción."""
+    row1 = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    val = row1[MONTH_IDX] if len(row1) > MONTH_IDX else None
+    return 1 if parse_hdr(val) else 2
+
 def read_file(src):
     if isinstance(src, bytes):
         src = io.BytesIO(src)
     wb = load_workbook(src, data_only=True)
     ws = wb["Hoja1"]
-    header = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
-    items  = [list(r) for r in ws.iter_rows(min_row=2, values_only=True) if r[0]]
+    hdr_row = _detect_header_row(ws)
+    header = [c.value for c in next(ws.iter_rows(min_row=hdr_row, max_row=hdr_row))]
+    items  = [list(r) for r in ws.iter_rows(min_row=hdr_row+1, values_only=True) if r[0]]
     return header, items
 
 def read_orange(src):
@@ -132,8 +139,9 @@ def read_orange(src):
         src = io.BytesIO(src)
     wb = load_workbook(src, data_only=True)
     ws = wb["Hoja1"]
+    data_start = _detect_header_row(ws) + 1
     result = {}
-    for row in ws.iter_rows(min_row=2):
+    for row in ws.iter_rows(min_row=data_start):
         if not row[0].value: continue
         rid = row[0].value
         for cell in row:
@@ -591,7 +599,7 @@ st.markdown("""
 <div style='background:#1F3864;padding:20px 24px;border-radius:8px;margin-bottom:24px'>
   <h1 style='color:white;margin:0;font-size:28px;font-family:Calibri,sans-serif'>ARCO</h1>
   <p style='color:#AAC4E8;margin:6px 0 0 0;font-size:14px;font-family:Calibri,sans-serif'>
-    Análisis y Revisión de Curvas de Obra &nbsp;·&nbsp; Estaciones Transformadoras &nbsp;·&nbsp; EPEC
+    Análisis y Revisión de Curvas de Obra &nbsp;·&nbsp; EPEC
   </p>
 </div>
 """, unsafe_allow_html=True)
