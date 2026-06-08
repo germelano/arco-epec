@@ -703,7 +703,7 @@ st.subheader("Propuesta EPEC")
 use_epec = st.checkbox("Generar Propuesta EPEC (prórroga por motivos)")
 
 delays = []
-overflow_mode = "Extender el plazo"
+overflow_mode = "Ampliación de plazo"
 
 if use_epec:
     if not uploaded_actual:
@@ -746,7 +746,7 @@ if use_epec:
         st.divider()
         overflow_mode = st.radio(
             "Si el corrimiento supera el fin del proyecto:",
-            ["Extender el plazo", "Comprimir actividades finales"],
+            ["Ampliación de plazo", "Modificación de curva (sin extender plazo)"],
             horizontal=True,
             help="Extender agrega meses al final. Comprimir redistribuye proporcionalmente.")
 
@@ -785,7 +785,7 @@ if st.button("▶  GENERAR", disabled=not can_generate, type="primary", use_cont
                     computo_floors=comp_floors)
                 if ovf:
                     overflow_warning = True
-                    if overflow_mode == "Extender el plazo":
+                    if overflow_mode == "Ampliación de plazo":
                         for extra in [2, 4, 6]:
                             ep_items, ep_hdr, ovf = apply_delays(
                                 items_a, hdr_a, delays, naranja, extra_months=extra,
@@ -810,7 +810,7 @@ if st.button("▶  GENERAR", disabled=not can_generate, type="primary", use_cont
             fname = f"ARCO_{safe}.xlsx" if safe else "ARCO_Curva_Avance.xlsx"
 
             if overflow_warning:
-                msg = "se extendió el proyecto" if overflow_mode == "Extender el plazo" \
+                msg = "se extendió el proyecto" if overflow_mode == "Ampliación de plazo" \
                       else "se comprimieron las actividades finales"
                 st.warning(f"⚠️ Algunos ítems superaban el plazo original — {msg}.")
 
