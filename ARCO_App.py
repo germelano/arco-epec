@@ -745,10 +745,10 @@ if use_epec:
 
         st.divider()
         overflow_mode = st.radio(
-            "Si el corrimiento supera el fin del proyecto:",
+            "Seleccioná el tipo de modificación a aplicar:",
             ["Ampliación de plazo", "Modificación de curva (sin extender plazo)"],
             horizontal=True,
-            help="Extender agrega meses al final. Comprimir redistribuye proporcionalmente.")
+            help="Ampliación de plazo agrega meses al final del proyecto. Modificación de curva redistribuye las actividades restantes dentro del plazo actual.")
 
 st.divider()
 
