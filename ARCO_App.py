@@ -161,6 +161,7 @@ def read_computo(src):
     result = {}
     for row in ws.iter_rows(min_row=3, values_only=True):
         if not row[0]: continue
+        if len(row) <= 9: continue   # fila con menos columnas de las esperadas
         nro = str(row[0]).strip()
         pct = float(row[9] or 0)   # col 10 = Cantidad medición acumulada (fracción 0-1)
         result[nro] = pct
