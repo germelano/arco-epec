@@ -153,17 +153,23 @@ def read_orange(src):
     return result
 
 def read_computo(src):
-    """Lee el cómputo métrico → {nro: pct_acumulado (0-1)}"""
+    """Lee el cómputo métrico → {nro: pct_acumulado (0-1)}
+    Soporta el formato SIGO que tiene dos hojas: 'Resumen' y 'DetalleComputo'.
+    Lee 'DetalleComputo' si existe; si no, cae al sheet activo.
+    Columnas en DetalleComputo (fila 2 = encabezado, fila 3+ = datos):
+      col 1 (idx 0): Nro ítem
+      col 10 (idx 9): Cantidad medición acumulada  ← anterior + actual, fracción 0-1
+    """
     if isinstance(src, bytes):
         src = io.BytesIO(src)
     wb = load_workbook(src, data_only=True)
-    ws = wb.active
+    ws = wb["DetalleComputo"] if "DetalleComputo" in wb.sheetnames else wb.active
     result = {}
     for row in ws.iter_rows(min_row=3, values_only=True):
         if not row[0]: continue
         if len(row) <= 9: continue   # fila con menos columnas de las esperadas
         nro = str(row[0]).strip()
-        pct = float(row[9] or 0)   # col 10 = Cantidad medición acumulada (fracción 0-1)
+        pct = float(row[9] or 0)   # Cantidad medición acumulada = anterior + actual (fracción 0-1)
         result[nro] = pct
     return result
 
@@ -180,12 +186,14 @@ def build_computo_floors(items, computo):
         cumsum = 0.0
         item_floors = {}
         for mi, val in enumerate(actuals):
-            if cumsum + val <= pct_cert + 1e-9:
-                cumsum += val
-                if val > 0:
-                    item_floors[mi] = val
-            else:
-                break
+            if val <= 0:
+                continue
+            remaining = pct_cert - cumsum
+            if remaining <= 1e-9:
+                break  # ya certificamos todo
+            certified = min(val, remaining)
+            item_floors[mi] = certified
+            cumsum += val
         floors[iid] = item_floors
     return floors
 
