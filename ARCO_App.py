@@ -5,6 +5,7 @@ Aplicación web · Streamlit
 """
 
 import io, calendar, math
+from datetime import date, timedelta
 import streamlit as st
 from openpyxl import Workbook, load_workbook
 from openpyxl.chart import LineChart, Reference
@@ -97,6 +98,29 @@ def _short_month(full_name):
     if not p: return full_name
     m, y = p
     return f"{MESES_REV[m].capitalize()} {y}  ({calendar.monthrange(y,m)[1]}d)"
+
+def parse_full_date(name):
+    """Extrae la fecha de corte exacta (día/mes/año) de un encabezado tipo
+    '6 de agosto de 2026'. A diferencia de parse_hdr, conserva el día."""
+    try:
+        p = str(name).lower().split()
+        return date(int(p[4]), MESES_ES[p[2]], int(p[0]))
+    except Exception:
+        return None
+
+def date_label(d):
+    return f"{d.day} de {MESES_REV[d.month]} de {d.year}"
+
+def annotate_same_month(old_label, new_date):
+    """Genera el texto de encabezado cuando la extensión por motivos cae
+    dentro del mismo mes calendario: no se abre columna nueva, sólo se
+    anota la nueva fecha de corte sobre la misma celda."""
+    old_date = parse_full_date(old_label)
+    if old_date is None:
+        return old_label
+    return (f"{date_label(new_date)} "
+            f"({old_date.day:02d}/{old_date.month:02d} actual-->"
+            f"{new_date.day:02d}/{new_date.month:02d} propuesta)")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CLASIFICACIÓN
@@ -258,6 +282,119 @@ def apply_delays(items, header, delays, naranja, extra_months=0, computo_floors=
         ]
         result.append(new_row)
     return result, new_header, overflow_nros
+
+def apply_categoria_b_pesos(items, header, delays, items_a):
+    """Ítems en pesos cuya curva entera arranca DESPUÉS de todos los meses
+    con motivo declarados (categoría B). Sólo corre en modo 'Ampliación de
+    plazo'; no toca USD ni ítems categoría A (esos ya quedaron resueltos
+    por apply_delays, intacto).
+
+    - dias_motivo_total: suma de los días de TODOS los motivos declarados
+      (no por motivo aislado).
+    - Si después del último mes activo del ítem ya existen columnas
+      siguientes en la planilla: se cascada el % normalmente (igual que
+      shift_one), repartiendo el sobrante con el tope item_max.
+    - Si el ítem termina en la última columna de la planilla (no hay
+      columnas siguientes): se compara la fecha de corte de esa columna +
+      días motivo contra el calendario.
+        · Si cae en el mismo mes -> no se toca ningún %, sólo se anota la
+          nueva fecha en el encabezado de esa columna.
+        · Si cae en el mes siguiente -> el excedente (% replanificado) se
+          marca como overflow para que el mecanismo existente de
+          extra_months/compress_items abra el mes nuevo.
+
+    `items_a` son los ítems ORIGINALES (antes de apply_delays) — se usan
+    únicamente para decidir si un ítem es categoría A o B mirando sus %
+    originales en los meses con motivo, sin verse afectados por corrimientos
+    que apply_delays ya pueda haber hecho.
+    """
+    month_names = list(header[MONTH_IDX:])
+    m_to_idx    = {n: i for i, n in enumerate(month_names)}
+    motivo_idxs = {m_to_idx[d["month_name"]] for d in delays if d["month_name"] in m_to_idx}
+    dias_motivo_total = sum(int(d["days"]) for d in delays)
+    max_motivo_idx = max(motivo_idxs) if motivo_idxs else None
+
+    orig_by_id = {row[0]: row for row in items_a}
+
+    result = []
+    overflow_nros = []
+    header_out = list(header)
+
+    for item in items:
+        iid = item[0]; nro = item[2]; desc = item[3]
+        moneda = item[5] if len(item) > 5 else ""
+
+        if classify(nro, desc, moneda) != "CE" or dias_motivo_total <= 0 or max_motivo_idx is None:
+            result.append(item); continue
+
+        orig_row  = orig_by_id.get(iid, item)
+        orig_pcts = [float(v or 0) for v in orig_row[MONTH_IDX:]]
+        ya_activo_en_motivo = any(
+            i < len(orig_pcts) and orig_pcts[i] > 1e-10 for i in motivo_idxs
+        )
+        if ya_activo_en_motivo:
+            result.append(item); continue  # categoría A — ya resuelto, no tocar
+
+        orig_active_idxs = [i for i, v in enumerate(orig_pcts) if v > 1e-10]
+        if not orig_active_idxs or orig_active_idxs[0] <= max_motivo_idx:
+            # El ítem ya terminó antes de (o se superpone con, sin caer
+            # justo en) los meses con motivo sin haber arrancado después de
+            # todos ellos -> no es categoría B, no se toca (el motivo no
+            # puede afectar un trabajo que ya estaba completo).
+            result.append(item); continue
+
+        pcts = [float(v or 0) for v in item[MONTH_IDX:]]
+        active_idxs = [i for i, v in enumerate(pcts) if v > 1e-10]
+        if not active_idxs:
+            result.append(item); continue
+
+        first_idx = active_idxs[0]
+        last_idx  = active_idxs[-1]
+        item_max  = max((v for v in pcts if v > 1e-10), default=1.0)
+
+        if last_idx < len(pcts) - 1:
+            # Ya existen columnas siguientes en la planilla -> cascada normal.
+            days_first = days_in(month_names[first_idx])
+            frac   = dias_motivo_total / days_first
+            amount = pcts[first_idx] * frac
+            if amount > 1e-10:
+                pcts[first_idx] -= amount
+                remaining = amount
+                t = first_idx + 1
+                while remaining > 1e-10 and t < len(pcts):
+                    avail = item_max - pcts[t]
+                    if avail > 1e-10:
+                        absorb     = min(remaining, avail)
+                        pcts[t]   += absorb
+                        remaining -= absorb
+                    t += 1
+                if remaining > 1e-10:
+                    overflow_nros.append(nro)
+        else:
+            # El ítem termina en la última columna de la planilla.
+            cutoff_date = parse_full_date(month_names[last_idx])
+            if cutoff_date is None:
+                result.append(item); continue
+            new_date = cutoff_date + timedelta(days=dias_motivo_total)
+            if (new_date.year, new_date.month) == (cutoff_date.year, cutoff_date.month):
+                # Entra en el mismo mes -> no se toca ningún %, sólo la fecha.
+                col_idx = MONTH_IDX + last_idx
+                header_out[col_idx] = annotate_same_month(month_names[last_idx], new_date)
+            else:
+                # No entra en el mismo mes -> overflow real, abre mes nuevo
+                # vía el mecanismo existente de extra_months.
+                days_month = days_in(month_names[last_idx])
+                frac   = dias_motivo_total / days_month
+                amount = pcts[last_idx] * frac
+                pcts[last_idx] -= amount
+                overflow_nros.append(nro)
+
+        new_row = list(item[:MONTH_IDX]) + [
+            round(p, 6) if p > 1e-10 else None for p in pcts
+        ]
+        result.append(new_row)
+
+    return result, header_out, overflow_nros
 
 def compress_items(items, overflow_nros):
     ovf_set = set(overflow_nros)
@@ -789,16 +926,23 @@ if st.button("▶  GENERAR", disabled=not can_generate, type="primary", use_cont
             ep_items = None; ep_header = None; overflow_warning = False
 
             if use_epec and delays:
-                ep_items, ep_hdr, ovf = apply_delays(
-                    items_a, hdr_a, delays, naranja, extra_months=0,
-                    computo_floors=comp_floors)
+                def _run_pass(extra):
+                    items_pass, hdr_pass, ovf_a = apply_delays(
+                        items_a, hdr_a, delays, naranja, extra_months=extra,
+                        computo_floors=comp_floors)
+                    ovf_b = []
+                    if overflow_mode == "Ampliación de plazo":
+                        items_pass, hdr_pass, ovf_b = apply_categoria_b_pesos(
+                            items_pass, hdr_pass, delays, items_a)
+                    ovf_all = sorted(set(ovf_a) | set(ovf_b))
+                    return items_pass, hdr_pass, ovf_all
+
+                ep_items, ep_hdr, ovf = _run_pass(0)
                 if ovf:
                     overflow_warning = True
                     if overflow_mode == "Ampliación de plazo":
                         for extra in [2, 4, 6]:
-                            ep_items, ep_hdr, ovf = apply_delays(
-                                items_a, hdr_a, delays, naranja, extra_months=extra,
-                                computo_floors=comp_floors)
+                            ep_items, ep_hdr, ovf = _run_pass(extra)
                             if not ovf: break
                     else:
                         ep_items = compress_items(ep_items, ovf)
