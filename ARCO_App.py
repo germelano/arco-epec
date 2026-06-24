@@ -654,16 +654,12 @@ def generate_excel(src_actual, src_contrat, epec_items, epec_header,
 
     for item_a in items_a:
         iid = item_a[0]; nro = item_a[2]; desc = item_a[3]
-        orange_cols = naranja.get(iid, {})
-        comp_f      = comp_floors_verify.get(iid, {})
+        comp_f = comp_floors_verify.get(iid, {})
 
         certified_cols = {}
-        for col1, val in orange_cols.items():
-            certified_cols[col1] = (val, "SIGO (naranja)")
         for mi, val in comp_f.items():
             col1 = MONTH_IDX + 1 + mi
-            if col1 not in certified_cols:
-                certified_cols[col1] = (val, "Cómputo")
+            certified_cols[col1] = (val, "Cómputo")
 
         if not certified_cols: continue
         for col1, (val_a, fuente) in certified_cols.items():
