@@ -486,13 +486,17 @@ def generate_excel(src_actual, src_contrat, epec_items, epec_header,
     """Genera el Excel y devuelve bytes."""
     hdr_a, items_a = read_file(src_actual)
     items_c = None
+    hdr_c   = None
     if src_contrat is not None:
-        _, items_c = read_file(src_contrat)
+        hdr_c, items_c = read_file(src_contrat)
 
     prop_c = {r[0]: r for r in items_c}    if items_c   else {}
     prop_e = {r[0]: r for r in epec_items} if epec_items else {}
 
-    use_hdr   = epec_header if epec_header else hdr_a
+    # Eje de meses = el encabezado más largo entre Actual, Contratista y EPEC,
+    # para no truncar cuando el contratista extiende el plazo (meses al final).
+    _cand     = [h for h in (hdr_a, hdr_c, epec_header) if h]
+    use_hdr   = max(_cand, key=lambda h: len([x for x in h[MONTH_IDX:] if x]))
     meses     = [h for h in use_hdr[MONTH_IDX:] if h]
     N         = len(meses)
     TOTAL_COL = 5 + N
